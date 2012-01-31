@@ -20,6 +20,8 @@ from optparse import OptionParser
 
 POSTING_TIME = 1 # min
 POLLING_TIME = 5 # min
+MAX_POST_PER_FEED = 5
+
 #RSS_FEED = 'http://damncorner.blogspot.com/feeds/posts/default'
 
 # Queries
@@ -27,6 +29,8 @@ SELECT_ALL_FEEDS = 'SELECT * FROM Feeds'
 SELECT_FEED = 'SELECT * FROM Feeds WHERE url = ?'
 INSERT_FEED = 'INSERT INTO Feeds (url) VALUES (?)'
 DELETE_FEED = 'DELETE FROM Feeds WHERE id = ?'
+SELECT_LAST_UPDATE = 'SELECT last_update FROM Feeds WHERE id = ? and url = ?'
+UPDATE_LAST_UPDATE = 'UPDATE Feeds SET last_update = ? WHERE id = ? AND url = ?'
 
 SELECT_POST = 'SELECT * FROM Posted WHERE link = ?'
 INSERT_CONTROL = 'INSERT INTO Control (id,last_update) VALUES (?,?)'
@@ -71,28 +75,36 @@ class TwitRss:
         self.log.info("Starting service")
         self.queue = Queue.Queue()
     
-    def __get_last_update(self):
-        self.cursor.execute('SELECT * FROM Control WHERE id = 1')
+    def __execute_sql(self, query, params):
+        self.log.debug("%s, %s" % (query, params))
+        self.cursor.execute(query, params)
+        
+    def __get_last_update(self, id_, url):
+        self.log.debug('Looking for the last update')
+        self.__execute_sql(SELECT_LAST_UPDATE, (id_, url))
         rtn = self.cursor.fetchone()
         if rtn is None:
-            self.log.debug('No record for last update. Creating a new one')
-            update = (1, time.strftime('%Y%m%d-%H%M'))
-            self.cursor.execute(INSERT_NEW_CONTROL, update)
-            self.connection.commit()
-            self.last_update = update[1]
+            self.log.debug('No record for last update')
+            return rtn
         else:
-            self.last_update = rtn[1]
-        self.last_update = '20110502-1715'
-    
-    def __set_last_update(self):
-        self.log.debug('Setting last update')
-        update = (time.strftime('%Y%m%d-%H%M'), 1)
-        self.cursor.execute('UPDATE Control SET last_update = ? WHERE id = ?', update)
+            #last_update = rtn[0]
+            last_update = '20110502-1715'
+        return last_update
+        
+    def __set_last_update(self, id_, url):
+        self.log.debug('Setting last update for %s' % url)
+        values = (time.strftime('%Y%m%d-%H%M'), id_, url)
+        self.cursor.execute(UPDATE_LAST_UPDATE, values)
         self.connection.commit()
-        self.last_update = update[0]
+        return values[0]
+    
+    def __get_all_feeds(self):
+        self.cursor.execute(SELECT_ALL_FEEDS)
+        feeds = self.cursor.fetchall()
+        return [Feed(obj) for obj in feeds]
     
     def add_feed(self, url):
-        self.log.debug('Adding feed %s...' % url)
+        self.log.debug('Adding feed %s' % url)
         self.cursor.execute(SELECT_FEED, (url, ))
         if self.cursor.fetchone():
             self.log.info('Feed already exist in database')
@@ -103,13 +115,12 @@ class TwitRss:
     
     def list_feeds(self):
         self.log.debug('Listing feeds')
-        self.cursor.execute(SELECT_ALL_FEEDS)
-        feeds = self.cursor.fetchall()
+        feeds = self.__get_all_feeds()
         if len(feeds) > 0:
             print '  ID   URL'
             print '=' * 80
             for feed in feeds:
-                print "%4s   %s" % (feed[0], feed[1])
+                print "%4s   %s" % (feed.id_, feed.url)
         else:
             self.log.info('There are no feeds registered')
     
@@ -126,18 +137,35 @@ class TwitRss:
         while True:
             try:
                 worked = False
-                self.__get_last_update()
-                
-                d = feedparser.parse(RSS_FEED)
-                self.log.debug('Processing RSS for "%s"', d.feed.title)
-                for item in d.entries:
-                    created = time.strftime("%Y%m%d-%H%M", item.published_parsed)
-                    updated = time.strftime("%Y%m%d-%H%M", item.updated_parsed)
+                new_posts = []
+                feeds = self.__get_all_feeds()
+                for feed in feeds:
+                    self.log.debug('Processing %s' % feed.url)
                     
-                    if created < self.last_update:
-                        if updated < self.last_update:
-                            continue
+                    # Reading the last_update flag
+                    last_update = self.__get_last_update(feed.id_, feed.url)
+                    to_process = []
+                    d = feedparser.parse(feed.url)
+                    self.log.debug('Processing RSS for "%s"', d.feed.title)
+                    for item in d.entries:
+                        created = time.strftime("%Y%m%d-%H%M", item.published_parsed)
+                        updated = time.strftime("%Y%m%d-%H%M", item.updated_parsed)
+                        
+                        if last_update is None:
+                            if len(to_process) < MAX_POST_PER_FEED:
+                                to_process.append(item)
+                            else:
+                                break
+                        else:
+                            if created < last_update:
+                                if updated < last_update:
+                                    print 'too old', item.title
+                                    continue
+                            to_process.append(item)
                     
+                    # Saving the last_update flag
+                    self.__set_last_update(feed.id_, feed.url)
+                    print to_process
                     # TODO: Search for feed on database, if it doesn't exist
                     # then publish it on twitter and add it to database
                     
@@ -160,7 +188,12 @@ class TwitRss:
             sys.exit(-1)
         sys.exit(0)
         
-
+class Feed:
+    def __init__(self, db_object):
+        self.id_ = db_object[0]
+        self.url = db_object[1]
+        self.last_update = db_object[2]
+        
 if __name__ == "__main__":
     t = TwitRss()
     t.main()
