@@ -74,10 +74,13 @@ class TwitRss:
         self.log.info("Starting service")
         self.queue = Queue.Queue()
     
-    def __execute_sql(self, query, params):
+    def __execute_sql(self, query, params=None):
         self.log.debug("%s, %s" % (query, params))
-        self.cursor.execute(query, params)
-        
+        if params:
+            self.cursor.execute(query, params)
+        else:
+            self.cursor.execute(query)
+            
     def __get_last_update(self, id_, url):
         self.log.debug('Looking for the last update')
         self.__execute_sql(SELECT_LAST_UPDATE, (id_, url))
@@ -86,31 +89,28 @@ class TwitRss:
             self.log.debug('No record for last update')
             return rtn
         else:
-            #last_update = rtn[0]
-            last_update = '20110502-1715'
-        return last_update
+            return rtn[0]
+            #return '20110502-1715'
         
     def __set_last_update(self, id_, url):
         self.log.debug('Setting last update for %s' % url)
         values = (time.strftime('%Y%m%d-%H%M'), id_, url)
-        self.cursor.execute(UPDATE_LAST_UPDATE, values)
+        self.__execute_sql(UPDATE_LAST_UPDATE, values)
         self.connection.commit()
         return values[0]
     
     def __get_all_feeds(self):
-        self.cursor.execute(SELECT_ALL_FEEDS)
+        self.__execute_sql(SELECT_ALL_FEEDS)
         feeds = self.cursor.fetchall()
         return [Feed(obj) for obj in feeds]
     
     def __enqueue_post(self, post):
-        # TODO: Search for feed on database, if it doesn't exist
-        # then publish it on twitter and add it to database
-        
-        self.cursor.execute(SELECT_POST, (post.link, ))
+        self.__execute_sql(SELECT_POST, (post.link, ))
         rtn = self.cursor.fetchone()
+        print rtn
         if rtn is None:
             data = (post.title, post.link, post.created_at, post.updated_at)
-            self.cursor.execute(INSERT_POST, data)
+            self.__execute_sql(INSERT_POST, data)
             self.connection.commit()
             if self.cursor.rowcount > 0:
                 self.log.debug('Enqueued post %s', post.link)
@@ -120,11 +120,11 @@ class TwitRss:
         
     def add_feed(self, url):
         self.log.debug('Adding feed %s' % url)
-        self.cursor.execute(SELECT_FEED, (url, ))
+        self.__execute_sql(SELECT_FEED, (url, ))
         if self.cursor.fetchone():
             self.log.info('Feed already exist in database')
         else:
-            self.cursor.execute(INSERT_FEED, (url, ))
+            self.__execute_sql(INSERT_FEED, (url, ))
             self.connection.commit()
             self.log.info('Feed added successfully')
     
@@ -141,44 +141,64 @@ class TwitRss:
     
     def remove_feed(self, id_):
         self.log.debug('Removing feed with id %s' % id_)
-        self.cursor.execute(DELETE_FEED, (id_,))
+        self.__execute_sql(DELETE_FEED, (id_,))
         self.connection.commit()
         if self.cursor.rowcount > 0:
             self.log.info('Feed removed successfully')
         else:
             self.log.info('That feed was not found in database')
-        
+    
+    def polling(self):
+        feeds = self.__get_all_feeds()
+        for feed in feeds:
+            self.log.debug('Processing %s' % feed.url)
+            
+            # Reading the last_update flag
+            last_update = self.__get_last_update(feed.id_, feed.url)
+            
+            # Preparing the process vars
+            d = feedparser.parse(feed.url)
+            self.log.debug('Processing RSS for "%s"', d.feed.title)
+            for item in d.entries:
+                post = Post(item)
+                if last_update is None:
+                    if len(to_process) < MAX_POST_PER_FEED:
+                        self.__enqueue_post(post)
+                    else:
+                        break
+                else:
+                    if post.older_than(last_update):
+                        continue
+                    self.__enqueue_post(post)
+            
+            # Saving the last_update flag
+            self.__set_last_update(feed.id_, feed.url)
+    
+    def posting(self):
+        try:
+            post = self.queue.get(False)
+        except Queue.Empty:
+            return
+        except:
+            return
+        print post
+    
     def main(self):
+        count_posting = 1
+        count_polling = 1
         while True:
             try:
-                worked = False
-                new_posts = []
-                feeds = self.__get_all_feeds()
-                for feed in feeds:
-                    self.log.debug('Processing %s' % feed.url)
-                    
-                    # Reading the last_update flag
-                    last_update = self.__get_last_update(feed.id_, feed.url)
-                    
-                    # Preparing the process vars
-                    d = feedparser.parse(feed.url)
-                    self.log.debug('Processing RSS for "%s"', d.feed.title)
-                    for item in d.entries:
-                        post = Post(item)
-                        if last_update is None:
-                            if len(to_process) < MAX_POST_PER_FEED:
-                                self.__enqueue_post(post)
-                            else:
-                                break
-                        else:
-                            if post.older_than(last_update):
-                                continue
-                            self.__enqueue_post(post)
-                    
-                    # Saving the last_update flag
-                    self.__set_last_update(feed.id_, feed.url)
+                if count_polling > POLLING_TIME:
+                    self.polling()
+                    count_polling = 0
                 
-                time.sleep(POLLING_TIME * 60)
+                if count_posting > POSTING_TIME:
+                    self.posting()
+                    count_posting = 0
+                
+                time.sleep(5)
+                count_posting += 1
+                count_polling += 1
             except KeyboardInterrupt:
                 break
             
