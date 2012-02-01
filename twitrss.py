@@ -32,9 +32,8 @@ DELETE_FEED = 'DELETE FROM Feeds WHERE id = ?'
 SELECT_LAST_UPDATE = 'SELECT last_update FROM Feeds WHERE id = ? and url = ?'
 UPDATE_LAST_UPDATE = 'UPDATE Feeds SET last_update = ? WHERE id = ? AND url = ?'
 
-SELECT_POST = 'SELECT * FROM Posted WHERE link = ?'
-INSERT_CONTROL = 'INSERT INTO Control (id,last_update) VALUES (?,?)'
-#INSERT_FEED = 'INSERT INTO Feeds (title,link,created,updated) VALUES (?,?,?,?)'
+SELECT_POST = 'SELECT * FROM Posted WHERE link = ?  '
+INSERT_POST = 'INSERT INTO Posted (title,link,created,updated) VALUES (?,?,?,?)'
 
 class TwitRss:
     def __init__(self):
@@ -103,6 +102,22 @@ class TwitRss:
         feeds = self.cursor.fetchall()
         return [Feed(obj) for obj in feeds]
     
+    def __enqueue_post(self, post):
+        # TODO: Search for feed on database, if it doesn't exist
+        # then publish it on twitter and add it to database
+        
+        self.cursor.execute(SELECT_POST, (post.link, ))
+        rtn = self.cursor.fetchone()
+        if rtn is None:
+            data = (post.title, post.link, post.created_at, post.updated_at)
+            self.cursor.execute(INSERT_POST, data)
+            self.connection.commit()
+            if self.cursor.rowcount > 0:
+                self.log.debug('Enqueued post %s', post.link)
+                self.queue.put(post)
+            else:
+                self.log.info('Post not enqueued %s', post.link)
+        
     def add_feed(self, url):
         self.log.debug('Adding feed %s' % url)
         self.cursor.execute(SELECT_FEED, (url, ))
@@ -144,36 +159,24 @@ class TwitRss:
                     
                     # Reading the last_update flag
                     last_update = self.__get_last_update(feed.id_, feed.url)
-                    to_process = []
+                    
+                    # Preparing the process vars
                     d = feedparser.parse(feed.url)
                     self.log.debug('Processing RSS for "%s"', d.feed.title)
                     for item in d.entries:
-                        created = time.strftime("%Y%m%d-%H%M", item.published_parsed)
-                        updated = time.strftime("%Y%m%d-%H%M", item.updated_parsed)
-                        
+                        post = Post(item)
                         if last_update is None:
                             if len(to_process) < MAX_POST_PER_FEED:
-                                to_process.append(item)
+                                self.__enqueue_post(post)
                             else:
                                 break
                         else:
-                            if created < last_update:
-                                if updated < last_update:
-                                    print 'too old', item.title
-                                    continue
-                            to_process.append(item)
+                            if post.older_than(last_update):
+                                continue
+                            self.__enqueue_post(post)
                     
                     # Saving the last_update flag
                     self.__set_last_update(feed.id_, feed.url)
-                    print to_process
-                    # TODO: Search for feed on database, if it doesn't exist
-                    # then publish it on twitter and add it to database
-                    
-                    #FIND_FEED
-                    #self.log.debug('Processing entry for "%s"', item.title)
-                    #data = (item.title, item.link, created, updated)
-                    #self.cursor.execute(INSERT_NEW_FEED, update)
-                
                 
                 time.sleep(POLLING_TIME * 60)
             except KeyboardInterrupt:
@@ -193,6 +196,22 @@ class Feed:
         self.id_ = db_object[0]
         self.url = db_object[1]
         self.last_update = db_object[2]
+
+class Post:
+    def __init__(self, entry):
+        self.title = entry.title
+        self.link = entry.link
+        self.created_at = time.strftime("%Y%m%d-%H%M", entry.published_parsed)
+        self.updated_at = time.strftime("%Y%m%d-%H%M", entry.updated_parsed)
+    
+    def __str__(self):
+        return "%s: %s (%s - %s)" % (self.title, self.link, self.created_at,
+            self.updated_at)
+    
+    def older_than(self, value):
+        if self.created_at < value and self.updated_at < value:
+            return True
+        return False
         
 if __name__ == "__main__":
     t = TwitRss()
