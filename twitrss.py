@@ -12,11 +12,15 @@ configured accounts """
 import sys
 import time
 import Queue
+import getpass
 import logging
 import sqlite3
 import feedparser
 
 from optparse import OptionParser
+
+from libturpial.api.core import Core
+from libturpial.common import ProtocolType
 
 POSTING_TIME = 1 # min
 POLLING_TIME = 5 # min
@@ -40,12 +44,17 @@ class TwitRss:
         parser = OptionParser()
         parser.add_option('-d', '--debug', dest='debug', action='store_true',
             help='show debug info in shell during execution', default=False)
-        parser.add_option('-a', '--add-feed', dest='feed_to_add',
+        parser.add_option('--add-feed', dest='feed_to_add',
             help='add a feed to database')
-        parser.add_option('-l', '--list-feeds', dest='list_feeds', 
+        parser.add_option('--list-feeds', dest='list_feeds', 
             action='store_true', help='list all feeds', default=False)
-        parser.add_option('-r', '--remove-feed', dest='feed_to_remove',
+        parser.add_option('--remove-feed', dest='feed_to_remove',
             help='remove a feed to database')
+        parser.add_option('--add-account', dest='add_account', 
+            action='store_true', help='add a microblogging account to database')
+        parser.add_option('--delete-account', dest='delete_account', 
+            action='store_true', help='delete a microblogging account from \
+            database')
         
         (options, args) = parser.parse_args()
         
@@ -73,14 +82,107 @@ class TwitRss:
         
         self.log.info("Starting service")
         self.queue = Queue.Queue()
-    
+        self.core = Core()
+        
+        if options.add_account:
+            self.add_account()
+            self.quit()
+        
+        if options.delete_account:
+            self.delete_account()
+            self.quit()
+        
+        self.start_login()
+        
     def __execute_sql(self, query, params=None):
         self.log.debug("%s, %s" % (query, params))
         if params:
             self.cursor.execute(query, params)
         else:
             self.cursor.execute(query)
-            
+    
+    def __user_input(self, message, blank=False):
+        while 1:
+            text = raw_input(message)
+            if text == '' and not blank:
+                print "You can't leave this field blank"
+                continue
+            break
+        return text
+    
+    def __user_password(self, message):
+        passwd = None
+        while 1:
+            passwd = getpass.unix_getpass(message)
+            if passwd:
+                return passwd
+            else:
+                print "Password can't be blank"
+                
+    def __build_protocols_menu(self):
+        index = None
+        protocols = self.core.list_protocols()
+        while 1:
+            print "Available protocols:"
+            for i in range(len(protocols)):
+                print "[%i] %s" % (i, protocols[i])
+            index = raw_input('Select protocol: ')
+            if not self.__validate_index(index, protocols):
+                print "Invalid protocol"
+            else:
+                break
+        return protocols[int(index)]
+    
+    def __build_accounts_menu(self, _all=False):
+        if len(self.core.list_accounts()) == 1: 
+            return self.core.list_accounts()[0]
+        
+        index = None
+        while 1:
+            accounts = self.__show_accounts()
+            if _all:
+                index = raw_input('Select account (or Enter for all): ')
+            else:
+                index = raw_input('Select account: ')
+            if not self.__validate_index(index, accounts, _all):
+                print "Invalid account"
+            else:
+                break
+        if index == '':
+            return ''
+        else:
+            return accounts[int(index)]
+    
+    def __show_accounts(self):
+        if len(self.core.list_accounts()) == 0:
+            print "There are no registered accounts"
+            return
+        
+        accounts = []
+        print "Available accounts:"
+        for acc in self.core.list_accounts():
+            print "[%i] %s - %s" % (len(accounts), acc.split('-')[0], 
+                acc.split('-')[1])
+            accounts.append(acc)
+        return accounts
+    
+    def __validate_index(self, index, array, blank=False):
+        try:
+            a = array[int(index)]
+            return True
+        except IndexError:
+            return False
+        except ValueError:
+            if blank and index == '':
+                return True
+            elif not blank and index == '':
+                return False
+            elif blank and index != '':
+                return False
+        except TypeError:
+            if index is None:
+                return False
+    
     def __get_last_update(self, id_, url):
         self.log.debug('Looking for the last update')
         self.__execute_sql(SELECT_LAST_UPDATE, (id_, url))
@@ -117,7 +219,35 @@ class TwitRss:
                 self.queue.put(post)
             else:
                 self.log.info('Post not enqueued %s', post.link)
+    
+    def start_login(self):
+        accounts = self.core.all_accounts()
+        for acc in accounts:
+            self.core.register_account(acc.username, acc.protocol_id)
+            response = self.core.login(acc.id_)
+            if response.code > 0:
+                print "Login error:", response.errmsg
+                return
+            
+            auth_obj = response.items
+            if auth_obj.must_auth():
+                print "Please visit %s, authorize Turpial and type the pin \
+                    returned" % auth_obj.url
+                pin = self.user_input('Pin: ')
+                self.core.authorize_oauth_token(acc.id_, pin)
+            
+            rtn = self.core.auth(acc.id_)
+            if rtn.code > 0:
+                print rtn.errmsg
+            else:
+                self.log.debug('Logged in with account %s' % acc.id_)
         
+        self.main()
+    
+    # =======================================================================
+    # Commands
+    # =======================================================================
+    
     def add_feed(self, url):
         self.log.debug('Adding feed %s' % url)
         self.__execute_sql(SELECT_FEED, (url, ))
@@ -147,6 +277,32 @@ class TwitRss:
             self.log.info('Feed removed successfully')
         else:
             self.log.info('That feed was not found in database')
+    
+    def add_account(self):
+        username = self.__user_input('Username: ')
+        protocol = self.__build_protocols_menu()
+        passwd = ''
+        if protocol == ProtocolType.IDENTICA:
+            passwd = self.__user_password('Password: ')
+        try:
+            self.core.register_account(username, protocol, passwd)
+            self.log.info('Account added successfully')
+        except Exception, e:
+            self.log.exception(e)
+            self.log.error('Error registering account. Please try again')
+    
+    def delete_account(self):
+        account = self.__build_accounts_menu()
+        try:
+            self.core.unregister_account(account, True)
+            self.log.info('Account deleted successfully')
+        except Exception, e:
+            self.log.exception(e)
+            self.log.error('Error deleting account. Please try again')
+    
+    # =======================================================================
+    # Services
+    # =======================================================================
     
     def polling(self):
         feeds = self.__get_all_feeds()
@@ -181,7 +337,16 @@ class TwitRss:
             return
         except:
             return
-        print post
+        url = self.core.short_url(post.link)
+        message = "[Post] %s - %s" % (post.title, url)
+        if len(message) > 140:
+            title = post.title[:len(message) - 144] + '...'
+            message = "[Post] %s - %s" % (title, url)
+        
+        print message
+        # TODO: Tuitear
+        # TODO: Guardar en la base de datos
+        # TODO: En caso de error meter el post de nuevo en la cola
     
     def main(self):
         count_posting = 1
@@ -235,4 +400,3 @@ class Post:
         
 if __name__ == "__main__":
     t = TwitRss()
-    t.main()
