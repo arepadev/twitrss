@@ -14,3 +14,18 @@ Dependencies
  * libturpial
  * python-feedparser
  * python-sqlite3
+
+Configuration
+-------------
+
+1.- List RSS
+
+$ python twitrss.py -l
+
+2.- Add RSS
+
+$ python twitrss.py -a <rss_url>
+
+3.- Remove RSS
+
+$ python twitrss.py -r <rss_id>
