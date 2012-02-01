@@ -50,11 +50,11 @@ class TwitRss:
             action='store_true', help='list all feeds', default=False)
         parser.add_option('--remove-feed', dest='feed_to_remove',
             help='remove a feed to database')
-        parser.add_option('--add-account', dest='add_account', 
+        parser.add_option('--add-account', dest='add_account', default=False,
             action='store_true', help='add a microblogging account to database')
         parser.add_option('--delete-account', dest='delete_account', 
             action='store_true', help='delete a microblogging account from \
-            database')
+            database', default=False)
         
         (options, args) = parser.parse_args()
         
@@ -191,8 +191,8 @@ class TwitRss:
             self.log.debug('No record for last update')
             return rtn
         else:
-            return rtn[0]
-            #return '20110502-1715'
+            #return rtn[0]
+            return '20110502-1715'
         
     def __set_last_update(self, id_, url):
         self.log.debug('Setting last update for %s' % url)
@@ -337,7 +337,12 @@ class TwitRss:
             return
         except:
             return
-        url = self.core.short_url(post.link)
+        
+        url = post.link
+        response = self.core.short_url(post.link)
+        if response.code == 0:
+            url = response.items
+        
         message = "[Post] %s - %s" % (post.title, url)
         if len(message) > 140:
             title = post.title[:len(message) - 144] + '...'
@@ -384,6 +389,7 @@ class Feed:
 
 class Post:
     def __init__(self, entry):
+        self.to_accounts = None
         self.title = entry.title
         self.link = entry.link
         self.created_at = time.strftime("%Y%m%d-%H%M", entry.published_parsed)
