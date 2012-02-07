@@ -583,12 +583,20 @@ class Feed:
     @classmethod
     def get_by_url(self, url):
         self.db.execute(SELECT_FEED_BY_URL, (url, ))
-        return Feed(self.db.cursor.fetchone())
+        rtn = self.db.cursor.fetchone()
+        if rtn:
+            return Feed(rtn)
+        else:
+            return None
     
     @classmethod
     def get_by_id(self, id_):
         self.db.execute(SELECT_FEED_BY_ID, (id_, ))
-        return Feed(self.db.cursor.fetchone())
+        rtn = self.db.cursor.fetchone()
+        if rtn:
+            return Feed(rtn)
+        else:
+            return None
     
     @classmethod
     def save(self, url):
