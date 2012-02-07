@@ -376,7 +376,7 @@ class TwitRss:
                 return
             
             # Save in DB
-            Account.new(self.db, acc_id,username, protocol)
+            Account.save(acc_id, username, protocol)
             self.log.info('Account added successfully')
         except Exception, e:
             self.log.exception(e)
