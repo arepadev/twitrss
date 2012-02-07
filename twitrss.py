@@ -1,8 +1,8 @@
 #!/usr/bin/python2
 # -*- coding: utf-8 -*-
 
-""" Twitter bot based on libturpial that reads RSS feeds and tweet them on 
-configured accounts """
+""" Twitter bot based on libturpial that reads RSS feeds and post them on 
+microblogging accounts """
 
 # Authors: 
 #   * Wil Alvarez (aka Satanas)
@@ -42,7 +42,8 @@ UPDATE_LAST_UPDATE = 'UPDATE Feeds SET last_update = ? WHERE id = ? AND url = ?'
 SELECT_POST = 'SELECT * FROM Posted WHERE link = ?'
 INSERT_POST = 'INSERT INTO Posted (title,link,created,updated) VALUES (?,?,?,?)'
 
-SELECT_ACCOUNT = 'SELECT * FROM Accounts WHERE code = ?'
+SELECT_ACCOUNT_BY_CODE = 'SELECT * FROM Accounts WHERE code = ?'
+SELECT_ACCOUNT_BY_ID = 'SELECT * FROM Accounts WHERE id = ?'
 INSERT_ACCOUNT = 'INSERT INTO Accounts (username,protocol,code) VALUES (?,?,?)'
 
 #SELECT Accounts.username, Accounts.protocol, Accounts.code 
@@ -197,7 +198,7 @@ class TwitRss:
             else:
                 break
         if index == '':
-            return '*'
+            return accounts
         else:
             return accounts[int(index)]
     
@@ -215,8 +216,8 @@ class TwitRss:
             else:
                 print "[%i] %s - %s" % (len(accounts), acc.username, 
                     acc.protocol)
-            accounts.append(acc)
-            Account.save_from_obj(acc)
+            full_acc = Account.save_from_obj(acc)
+            accounts.append(full_acc)
         return accounts
     
     def __build_feeds_menu(self):
@@ -296,20 +297,6 @@ class TwitRss:
                 self.queue.put(post)
             else:
                 self.log.info('Post not enqueued %s', post.link)
-    
-    def __associate_account_feeds(self, acc, feed_id):
-        self.__execute_sql(SELECT_ACCOUNT, (acc, ))
-        rtn = self.cursor.fetchone()
-        self.__execute_sql(SELECT_ACCOUNT_FEED_2, (feed_id, rtn[0]))
-        af2 = self.cursor.fetchone()
-        
-        if af2:
-            self.log.info('This feed already has been associated with that account')
-        else:
-            prefix = self.__user_input('Type the prefix you want to use to post this messages: ', True)
-            self.__execute_sql(INSERT_ACCOUNT_FEED, (feed_id, rtn[0], prefix))
-            self.connection.commit()
-            self.log.info('Feed associated successfully')
     
     def start_login(self):
         accounts = self.core.all_accounts()
@@ -412,7 +399,7 @@ class TwitRss:
             print 'This feed has been associated to all your accounts'
         else:
             if count == 0:
-                print 'You need to associate this feed with at least to one account'
+                print 'You must to associate this feed with at least one account'
             else:
                 print "This feed has been associated with:"
                 for item in afs:
@@ -421,11 +408,27 @@ class TwitRss:
                     return
             print 
             rtn = self.__build_accounts_menu(_all=True)
-            if rtn == '*':
-                for acc in self.core.list_accounts():
-                    self.__associate_account_feeds(acc, feed_id)
+            if isinstance(rtn, list):
+                for acc in rtn:
+                    exist = False
+                    for item in afs:
+                        if item.account.code == acc.code:
+                            exist = True
+                            break
+                    if not exist:
+                        prefix = self.__user_input('Type the prefix for \
+posting in %s account: ' % acc, True)
+                        AccountFeed.save(acc, feed_id, prefix)
             else:
-                self.__associate_account_feeds(rtn, feed_id)
+                for item in afs:
+                    if item.account.code == rtn.code:
+                        self.log.info('This feed already has been associated with that account')
+                        return
+                prefix = self.__user_input('Type the prefix for posting in %s \
+account: ' % rtn, True)
+                AccountFeed.save(rtn, feed_id, prefix)
+            
+            self.log.info('Feed associated successfully')
         
     def list_feeds(self):
         self.log.debug('Listing feeds')
@@ -449,7 +452,6 @@ class TwitRss:
         else:
             self.log.info('That feed was not found in database')
     
-    
     def delete_account(self):
         account = self.__build_accounts_menu()
         try:
@@ -465,6 +467,7 @@ class TwitRss:
         for feed in self.__get_all_feeds():
             tmp = {'url': feed.url, 'last_update': feed.last_update}
             results.append(tmp)
+    
     # =======================================================================
     # Services
     # =======================================================================
@@ -540,7 +543,7 @@ class TwitRss:
         self.quit()
     
     def quit(self, error=False):
-        self.connection.close()
+        self.db.connection.close()
         self.log.debug('Bye')
         if error:
             sys.exit(-1)
@@ -580,24 +583,28 @@ class Feed:
     @classmethod
     def get_by_url(self, url):
         self.db.execute(SELECT_FEED_BY_URL, (url, ))
-        return self.db.cursor.fetchone()
+        return Feed(self.db.cursor.fetchone())
     
     @classmethod
     def get_by_id(self, id_):
         self.db.execute(SELECT_FEED_BY_ID, (id_, ))
-        return self.db.cursor.fetchone()
+        return Feed(self.db.cursor.fetchone())
     
     @classmethod
     def save(self, url):
         self.db.execute(INSERT_FEED, (url, ), True)
 
 class Account:
-    def __init__(self, id_, username, protocol):
+    def __init__(self, code, username, protocol, id_=None):
         self.id_ = id_
+        self.code = code
         self.username = username
         self.protocol = protocol
         self.db = None
         self.core = None
+    
+    def __str__(self):
+        return "%s (%s)" % (self.username, self.protocol)
     
     @classmethod
     def get_all(self):
@@ -605,8 +612,21 @@ class Account:
     
     @classmethod
     def get_by_id(self, id_):
-        self.db.execute(SELECT_ACCOUNT, (id_, ))
-        return self.db.cursor.fetchone()
+        self.db.execute(SELECT_ACCOUNT_BY_ID, (id_, ))
+        obj = self.db.cursor.fetchone()
+        if obj:
+            return Account(obj[3], obj[1], obj[2], obj[0])
+        else:
+            return None
+    
+    @classmethod
+    def get_by_code(self, code):
+        self.db.execute(SELECT_ACCOUNT_BY_CODE, (code, ))
+        obj = self.db.cursor.fetchone()
+        if obj:
+            return Account(obj[3], obj[1], obj[2], obj[0])
+        else:
+            return None
     
     @classmethod
     def get_from_libturpial(self):
@@ -616,14 +636,19 @@ class Account:
         return accounts
     
     @classmethod
-    def save(self, id_, username, protocol):
-        rtn = self.get_by_id(id_)
+    def save(self, code, username, protocol):
+        rtn = self.get_by_code(code)
         if rtn is None:
-            self.db.execute(INSERT_ACCOUNT, (username, protocol, id_), True)
+            self.db.execute(INSERT_ACCOUNT, (username, protocol, code), True)
         
     @classmethod
     def save_from_obj(self, obj):
-        self.save(obj.id_, obj.username, obj.protocol)
+        rtn = self.get_by_code(obj.code)
+        if rtn:
+            return rtn
+        else:
+            self.save(obj.code, obj.username, obj.protocol)
+            return self.get_by_code(obj.code)
     
     @classmethod
     def count(self):
@@ -631,9 +656,9 @@ class Account:
     
 class AccountFeed:
     def __init__(self, id_, feed, account):
-        self.id_ = None
-        self.feed = None
-        self.account = None
+        self.id_ = id_
+        self.feed = feed
+        self.account = account
         self.db = None
     
     @classmethod
@@ -643,9 +668,22 @@ class AccountFeed:
         results = []
         for item in self.db.cursor.fetchall():
             account = Account.get_by_id(item[2])
-            results.append(AccountFeed(item[0], feed, account))
+            af = AccountFeed(item[0], feed, account)
+            results.append(af)
         return results
-
+    
+    @classmethod
+    def exist(self, account_id, feed_id):
+        self.db.execute(SELECT_ACCOUNT_FEED_2, (feed_id, account_id))
+        return self.db.cursor.fetchone()
+        
+    @classmethod
+    def save(self, account, feed_id, prefix):
+        if self.exist(account.id_, feed_id):
+            self.log.info('This feed already has been associated with that account')
+            return
+        self.db.execute(INSERT_ACCOUNT_FEED, (feed_id, account.id_, prefix), True)
+        
 class Post:
     def __init__(self, entry):
         self.to_accounts = None
