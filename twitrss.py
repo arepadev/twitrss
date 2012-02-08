@@ -375,7 +375,7 @@ class TwitRss:
     
     def setup(self):
         accounts = self.__show_accounts(True)
-        if len(accounts) == 0:
+        if not account:
             print 'You need to create at least one account'
             self.add_account()
             
