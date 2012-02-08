@@ -39,14 +39,11 @@ DELETE_FEED = 'DELETE FROM Feeds WHERE id = ?'
 SELECT_LAST_UPDATE = 'SELECT last_update FROM Feeds WHERE id = ? and url = ?'
 UPDATE_LAST_UPDATE = 'UPDATE Feeds SET last_update = ? WHERE id = ? AND url = ?'
 
-SELECT_POST = 'SELECT * FROM Posted WHERE link = ?'
-INSERT_POST = 'INSERT INTO Posted (title,link,created,updated) VALUES (?,?,?,?)'
-
 SELECT_ACCOUNT_BY_CODE = 'SELECT * FROM Accounts WHERE code = ?'
 SELECT_ACCOUNT_BY_ID = 'SELECT * FROM Accounts WHERE id = ?'
 INSERT_ACCOUNT = 'INSERT INTO Accounts (username,protocol,code) VALUES (?,?,?)'
+DELETE_ACCOUNT = 'DELETE FROM Accounts WHERE id = ?'
 
-#SELECT Accounts.username, Accounts.protocol, Accounts.code 
 SELECT_ACCOUNT_FEED = """
 SELECT AccountFeeds.id, Feeds.id, Accounts.id
 FROM AccountFeeds 
@@ -54,15 +51,23 @@ LEFT JOIN Accounts ON Accounts.id=AccountFeeds.account_id
 LEFT JOIN Feeds ON Feeds.id=AccountFeeds.feed_id 
 WHERE Feeds.id = ?
 """
-
 SELECT_ACCOUNT_FEED_2 = """
 SELECT Accounts.username, Accounts.protocol, Accounts.code 
 FROM AccountFeeds 
 LEFT JOIN Accounts ON Accounts.id=AccountFeeds.account_id 
 LEFT JOIN Feeds ON Feeds.id=AccountFeeds.feed_id 
-WHERE Feeds.id = ? AND Accounts.id = ?"""
+WHERE Feeds.id = ? AND Accounts.id = ?
+"""
+INSERT_ACCOUNT_FEED = """
+INSERT INTO AccountFeeds (feed_id,account_id,prefix) 
+VALUES (?,?,?)
+"""
+DELETE_ACCOUNT_FEED_BY_ACCOUNT = 'DELETE FROM AccountFeeds WHERE account_id = ?'
+DELETE_ACCOUNT_FEED_BY_FEED = 'DELETE FROM AccountFeeds WHERE feed_id = ?'
 
-INSERT_ACCOUNT_FEED = 'INSERT INTO AccountFeeds (feed_id,account_id,prefix) VALUES (?,?,?)'
+SELECT_POST = 'SELECT * FROM Posted WHERE link = ?'
+INSERT_POST = 'INSERT INTO Posted (title,link,created,updated) VALUES (?,?,?,?)'
+DELETE_POST_BY_ACCOUNT = 'DELETE FROM Posts WHERE account_id = ?'
 
 class TwitRss:
     def __init__(self):
@@ -111,6 +116,7 @@ class TwitRss:
         Feed.db = self.db
         Account.db = self.db
         AccountFeed.db = self.db
+        Post.db = self.db
         self.core = Core()
         Account.core = self.core
         
@@ -131,7 +137,7 @@ class TwitRss:
             self.quit()
             
         if options.delete_feed:
-            self.remove_feed(options.feed_to_remove)
+            self.delete_feed()
             self.quit()
         
         if options.associate_feed:
@@ -246,7 +252,7 @@ class TwitRss:
                 print "* %s" % (feed.url)
             else:
                 print "[%i] %s" % (len(feeds), feed.url)
-            feeds.append(feed.id_)
+            feeds.append(feed)
         return feeds
     
     def __validate_index(self, index, array, blank=False):
@@ -403,7 +409,8 @@ class TwitRss:
             else:
                 print "This feed has been associated with:"
                 for item in afs:
-                    print "* %s (%s)" % (item.account.username, item.account.protocol)
+                    print "* %s (%s)" % (item.account.username, 
+                        item.account.protocol)
                 if not self.__build_confirm_menu('Do you want to associate this feed to another account?'):
                     return
             print 
@@ -416,16 +423,14 @@ class TwitRss:
                             exist = True
                             break
                     if not exist:
-                        prefix = self.__user_input('Type the prefix for \
-posting in %s account: ' % acc, True)
+                        prefix = self.__user_input('Type the prefix for posting in %s account: ' % acc, True)
                         AccountFeed.save(acc, feed_id, prefix)
             else:
                 for item in afs:
                     if item.account.code == rtn.code:
                         self.log.info('This feed already has been associated with that account')
                         return
-                prefix = self.__user_input('Type the prefix for posting in %s \
-account: ' % rtn, True)
+                prefix = self.__user_input('Type the prefix for posting in %s account: ' % rtn, True)
                 AccountFeed.save(rtn, feed_id, prefix)
             
             self.log.info('Feed associated successfully')
@@ -443,21 +448,24 @@ account: ' % rtn, True)
             self.log.info('There are no feeds registered')
         return count
     
-    def remove_feed(self, id_):
-        self.log.debug('Removing feed with id %s' % id_)
-        self.__execute_sql(DELETE_FEED, (id_,))
-        self.connection.commit()
-        if self.cursor.rowcount > 0:
-            self.log.info('Feed removed successfully')
-        else:
-            self.log.info('That feed was not found in database')
+    def delete_feed(self):
+        feed = self.__build_feeds_menu()
+        try:
+            AccountFeed.delete_by_feed(feed.id_)
+            Feed.delete(feed.id_)
+            self.log.info('Feed deleted successfully')
+        except Exception, e:
+            self.log.exception(e)
+            self.log.error('Error deleting feed. Please try again')
     
     def delete_account(self):
         account = self.__build_accounts_menu()
         try:
-            self.core.unregister_account(account, True)
+            self.core.unregister_account(account.code, True)
+            Post.delete_by_account(account.id_)
+            AccountFeed.delete_by_account(account.id_)
+            Account.delete(account.id_)
             self.log.info('Account deleted successfully')
-            # Delete from DB
         except Exception, e:
             self.log.exception(e)
             self.log.error('Error deleting account. Please try again')
@@ -520,6 +528,10 @@ account: ' % rtn, True)
         # TODO: Tuitear
         # TODO: Guardar en la base de datos
         # TODO: En caso de error meter el post de nuevo en la cola
+    
+    # =======================================================================
+    # Main Loop
+    # =======================================================================
     
     def main(self):
         count_posting = 1
@@ -601,6 +613,10 @@ class Feed:
     @classmethod
     def save(self, url):
         self.db.execute(INSERT_FEED, (url, ), True)
+    
+    @classmethod
+    def delete(self, id_):
+        self.db.execute(DELETE_FEED, (id_, ), True)
 
 class Account:
     def __init__(self, code, username, protocol, id_=None):
@@ -662,6 +678,10 @@ class Account:
     def count(self):
         return len(self.core.list_accounts())
     
+    @classmethod
+    def delete(self, id_):
+        self.db.execute(DELETE_ACCOUNT, (id_, ), True)
+    
 class AccountFeed:
     def __init__(self, id_, feed, account):
         self.id_ = id_
@@ -690,7 +710,16 @@ class AccountFeed:
         if self.exist(account.id_, feed_id):
             self.log.info('This feed already has been associated with that account')
             return
-        self.db.execute(INSERT_ACCOUNT_FEED, (feed_id, account.id_, prefix), True)
+        self.db.execute(INSERT_ACCOUNT_FEED, (feed_id, account.id_, prefix), 
+            True)
+    
+    @classmethod
+    def delete_by_account(self, acc_id):
+        self.db.execute(DELETE_ACCOUNT_FEED_BY_ACCOUNT, (acc_id, ), True)
+    
+    @classmethod
+    def delete_by_feed(self, feed_id):
+        self.db.execute(DELETE_ACCOUNT_FEED_BY_FEED, (feed_id, ), True)
         
 class Post:
     def __init__(self, entry):
@@ -708,6 +737,10 @@ class Post:
         if self.created_at < value and self.updated_at < value:
             return True
         return False
+    
+    @classmethod
+    def delete_by_account(self, acc_id):
+        self.db.execute(DELETE_POST_BY_ACCOUNT, (acc_id, ), True)
 
 if __name__ == "__main__":
     t = TwitRss()
