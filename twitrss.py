@@ -71,6 +71,8 @@ SELECT_POST = 'SELECT * FROM Posted WHERE link = ?'
 INSERT_POST = 'INSERT INTO Posted (title,link,created,updated) VALUES (?,?,?,?)'
 DELETE_POST_BY_ACCOUNT = 'DELETE FROM Posts WHERE account_id = ?'
 
+# TODO: Test menues with no accounts, no feeds and no associations
+
 class TwitRss:
     def __init__(self):
         parser = OptionParser()
@@ -222,9 +224,9 @@ class TwitRss:
         reg_accs = Account.get_from_libturpial()
         
         if len(reg_accs) == 0:
-            return accounts
+            return None
         
-        print "Available accounts:"
+        print "\nAvailable accounts:"
         for acc in reg_accs:
             if just_list:
                 print "* %s (%s)" % (acc.username, acc.protocol)
@@ -251,7 +253,7 @@ class TwitRss:
         
         if len(rtn) == 0:
             self.log.info("There are no registered feeds")
-            return
+            return None
         
         feeds = []
         
@@ -280,7 +282,7 @@ class TwitRss:
         
         if len(rtn) == 0:
             self.log.info("There are no feeds associated with accounts")
-            return
+            return None
         
         account_feeds = []
         
@@ -519,10 +521,9 @@ class TwitRss:
         return count
     
     def show_info(self):
-        results = []
-        for feed in self.__get_all_feeds():
-            tmp = {'url': feed.url, 'last_update': feed.last_update}
-            results.append(tmp)
+        self.__show_feeds(just_list=True)
+        self.__show_accounts(just_list=True)
+        self.__show_account_feeds(just_list=True)
     
     # =======================================================================
     # Services
