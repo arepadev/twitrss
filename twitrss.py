@@ -44,6 +44,7 @@ SELECT_ACCOUNT_BY_ID = 'SELECT * FROM Accounts WHERE id = ?'
 INSERT_ACCOUNT = 'INSERT INTO Accounts (username,protocol,code) VALUES (?,?,?)'
 DELETE_ACCOUNT = 'DELETE FROM Accounts WHERE id = ?'
 
+SELECT_ALL_ACCOUNT_FEEDS = 'SELECT * FROM AccountFeeds'
 SELECT_ACCOUNT_FEED = """
 SELECT AccountFeeds.id, Feeds.id, Accounts.id
 FROM AccountFeeds 
@@ -62,6 +63,7 @@ INSERT_ACCOUNT_FEED = """
 INSERT INTO AccountFeeds (feed_id,account_id,prefix) 
 VALUES (?,?,?)
 """
+DELETE_ACCOUNT_FEED = 'DELETE FROM AccountFeeds WHERE id = ?'
 DELETE_ACCOUNT_FEED_BY_ACCOUNT = 'DELETE FROM AccountFeeds WHERE account_id = ?'
 DELETE_ACCOUNT_FEED_BY_FEED = 'DELETE FROM AccountFeeds WHERE feed_id = ?'
 
@@ -95,6 +97,9 @@ class TwitRss:
         
         parser.add_option('--associate', dest='associate_feed', 
             action='store_true', help='associate feed with account', 
+            default=False)
+        parser.add_option('--deassociate', dest='deassociate_feed', 
+            action='store_true', help='deassociate feed from account', 
             default=False)
         
         parser.add_option('--change-prefix', dest='change_prefix', 
@@ -142,6 +147,10 @@ class TwitRss:
         
         if options.associate_feed:
             self.associate_feed()
+            self.quit()
+        
+        if options.deassociate_feed:
+            self.deassociate_feed()
             self.quit()
         
         if options.show_info:
@@ -254,6 +263,36 @@ class TwitRss:
                 print "[%i] %s" % (len(feeds), feed.url)
             feeds.append(feed)
         return feeds
+    
+    def __build_account_feeds_menu(self):
+        index = None
+        while 1:
+            afs = self.__show_account_feeds()
+            index = raw_input('Select account/feed: ')
+            if not self.__validate_index(index, afs, False):
+                print "Invalid account/feed"
+            else:
+                break
+        return afs[int(index)]
+    
+    def __show_account_feeds(self, just_list=False):
+        rtn = AccountFeed.get_all()
+        
+        if len(rtn) == 0:
+            self.log.info("There are no feeds associated with accounts")
+            return
+        
+        account_feeds = []
+        
+        print "\nFeeds associated with accounts:"
+        for af in rtn:
+            if just_list:
+                print "* %-35s %-35s" % (af.account, af.feed.url)
+            else:
+                print "[%i] %-35s %-35s" % (len(account_feeds), af.account, 
+                    af.feed.url)
+            account_feeds.append(af)
+        return account_feeds
     
     def __validate_index(self, index, array, blank=False):
         try:
@@ -397,8 +436,8 @@ class TwitRss:
             self.log.info('Feed registered successfully')
     
     def associate_feed(self):
-        feed_id = self.__build_feeds_menu()
-        afs = AccountFeed.get_by_feed_id(feed_id)
+        feed = self.__build_feeds_menu()
+        afs = AccountFeed.get_by_feed_id(feed.id_)
         count = len(afs)
         
         if count == Account.count():
@@ -424,29 +463,16 @@ class TwitRss:
                             break
                     if not exist:
                         prefix = self.__user_input('Type the prefix for posting in %s account: ' % acc, True)
-                        AccountFeed.save(acc, feed_id, prefix)
+                        AccountFeed.save(acc, feed.id_, prefix)
             else:
                 for item in afs:
                     if item.account.code == rtn.code:
                         self.log.info('This feed already has been associated with that account')
                         return
                 prefix = self.__user_input('Type the prefix for posting in %s account: ' % rtn, True)
-                AccountFeed.save(rtn, feed_id, prefix)
+                AccountFeed.save(rtn, feed.id_, prefix)
             
             self.log.info('Feed associated successfully')
-        
-    def list_feeds(self):
-        self.log.debug('Listing feeds')
-        feeds = self.__get_all_feeds()
-        count = len(feeds)
-        if count > 0:
-            print '  ID   URL'
-            print '=' * 80
-            for feed in feeds:
-                print "%4s   %s" % (feed.id_, feed.url)
-        else:
-            self.log.info('There are no feeds registered')
-        return count
     
     def delete_feed(self):
         feed = self.__build_feeds_menu()
@@ -469,6 +495,28 @@ class TwitRss:
         except Exception, e:
             self.log.exception(e)
             self.log.error('Error deleting account. Please try again')
+    
+    def deassociate_feed(self):
+        af = self.__build_account_feeds_menu()
+        try:
+            AccountFeed.delete(af.id_)
+            self.log.info('Account deassociated from Feed successfully')
+        except Exception, e:
+            self.log.exception(e)
+            self.log.error('Error deassociating account form feed. Please try again')
+        
+    def list_feeds(self):
+        self.log.debug('Listing feeds')
+        feeds = self.__get_all_feeds()
+        count = len(feeds)
+        if count > 0:
+            print '  ID   URL'
+            print '=' * 80
+            for feed in feeds:
+                print "%4s   %s" % (feed.id_, feed.url)
+        else:
+            self.log.info('There are no feeds registered')
+        return count
     
     def show_info(self):
         results = []
@@ -690,6 +738,17 @@ class AccountFeed:
         self.db = None
     
     @classmethod
+    def get_all(self):
+        self.db.execute(SELECT_ALL_ACCOUNT_FEEDS)
+        account_feeds = []
+        afs = self.db.cursor.fetchall()
+        for obj in afs:
+            feed = Feed.get_by_id(obj[1])
+            account = Account.get_by_id(obj[2])
+            account_feeds.append(AccountFeed(obj[0], feed, account))
+        return account_feeds
+    
+    @classmethod
     def get_by_feed_id(self, feed_id):
         feed = Feed.get_by_id(feed_id)
         self.db.execute(SELECT_ACCOUNT_FEED, (feed_id, ))
@@ -713,6 +772,10 @@ class AccountFeed:
         self.db.execute(INSERT_ACCOUNT_FEED, (feed_id, account.id_, prefix), 
             True)
     
+    @classmethod
+    def delete(self, id_):
+        self.db.execute(DELETE_ACCOUNT_FEED, (id_, ), True)
+        
     @classmethod
     def delete_by_account(self, acc_id):
         self.db.execute(DELETE_ACCOUNT_FEED_BY_ACCOUNT, (acc_id, ), True)
