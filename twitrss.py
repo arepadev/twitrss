@@ -28,8 +28,6 @@ POSTING_TIME = 1 # min
 POLLING_TIME = 5 # min
 MAX_POST_PER_FEED = 5
 
-#RSS_FEED = 'http://damncorner.blogspot.com/feeds/posts/default'
-
 # Queries
 SELECT_ALL_FEEDS = 'SELECT * FROM Feeds'
 SELECT_FEED_BY_ID = 'SELECT * FROM Feeds WHERE id = ?'
@@ -46,7 +44,7 @@ DELETE_ACCOUNT = 'DELETE FROM Accounts WHERE id = ?'
 
 SELECT_ALL_ACCOUNT_FEEDS = 'SELECT * FROM AccountFeeds'
 SELECT_ACCOUNT_FEED = """
-SELECT AccountFeeds.id, Feeds.id, Accounts.id
+SELECT AccountFeeds.id, Feeds.id, Accounts.id, AccountFeeds.prefix
 FROM AccountFeeds 
 LEFT JOIN Accounts ON Accounts.id=AccountFeeds.account_id 
 LEFT JOIN Feeds ON Feeds.id=AccountFeeds.feed_id 
@@ -67,11 +65,14 @@ DELETE_ACCOUNT_FEED = 'DELETE FROM AccountFeeds WHERE id = ?'
 DELETE_ACCOUNT_FEED_BY_ACCOUNT = 'DELETE FROM AccountFeeds WHERE account_id = ?'
 DELETE_ACCOUNT_FEED_BY_FEED = 'DELETE FROM AccountFeeds WHERE feed_id = ?'
 
-SELECT_POST = 'SELECT * FROM Posted WHERE link = ?'
-INSERT_POST = 'INSERT INTO Posted (title,link,created,updated) VALUES (?,?,?,?)'
+SELECT_POST = 'SELECT * FROM Posts WHERE link = ?'
+INSERT_POST = """
+INSERT INTO Posts (title,link,created,updated,account_id) VALUES (?,?,?,?,?)
+"""
 DELETE_POST_BY_ACCOUNT = 'DELETE FROM Posts WHERE account_id = ?'
 
 # TODO: Test menues with no accounts, no feeds and no associations
+# TODO: Initialize with current date for posting none at first run
 
 class TwitRss:
     def __init__(self):
@@ -161,6 +162,7 @@ class TwitRss:
         
         self.log.info("Starting service")
         self.queue = Queue.Queue()
+        Post.queue = self.queue
         self.start_login()
     
     def __user_input(self, message, blank=False):
@@ -312,38 +314,6 @@ class TwitRss:
         except TypeError:
             if index is None:
                 return False
-    
-    def __get_last_update(self, id_, url):
-        self.log.debug('Looking for the last update')
-        self.__execute_sql(SELECT_LAST_UPDATE, (id_, url))
-        rtn = self.cursor.fetchone()
-        if rtn is None:
-            self.log.debug('No record for last update')
-            return rtn
-        else:
-            #return rtn[0]
-            return '20110502-1715'
-        
-    def __set_last_update(self, id_, url):
-        self.log.debug('Setting last update for %s' % url)
-        values = (time.strftime('%Y%m%d-%H%M'), id_, url)
-        self.__execute_sql(UPDATE_LAST_UPDATE, values)
-        self.connection.commit()
-        return values[0]
-    
-    def __enqueue_post(self, post):
-        self.__execute_sql(SELECT_POST, (post.link, ))
-        rtn = self.cursor.fetchone()
-        print rtn
-        if rtn is None:
-            data = (post.title, post.link, post.created_at, post.updated_at)
-            self.__execute_sql(INSERT_POST, data)
-            self.connection.commit()
-            if self.cursor.rowcount > 0:
-                self.log.debug('Enqueued post %s', post.link)
-                self.queue.put(post)
-            else:
-                self.log.info('Post not enqueued %s', post.link)
     
     def start_login(self):
         accounts = self.core.all_accounts()
@@ -530,53 +500,62 @@ class TwitRss:
     # =======================================================================
     
     def polling(self):
-        feeds = self.__get_all_feeds()
+        self.log.debug('Polling...')
+        to_process = 0
+        feeds = Feed.get_all()
         for feed in feeds:
-            self.log.debug('Processing %s' % feed.url)
-            
-            # Reading the last_update flag
-            last_update = self.__get_last_update(feed.id_, feed.url)
-            
             # Preparing the process vars
             d = feedparser.parse(feed.url)
-            self.log.debug('Processing RSS for "%s"', d.feed.title)
-            for item in d.entries:
-                post = Post(item)
-                if last_update is None:
-                    if len(to_process) < MAX_POST_PER_FEED:
-                        self.__enqueue_post(post)
-                    else:
-                        break
-                else:
-                    if post.older_than(last_update):
-                        continue
-                    self.__enqueue_post(post)
+            self.log.debug('Processing RSS for "%s" (%s)' % (d.feed.title, 
+                feed.url))
             
-            # Saving the last_update flag
-            self.__set_last_update(feed.id_, feed.url)
+            entries = d.entries
+            if feed.last_update is None:
+                entries = d.entries[:MAX_POST_PER_FEED]
+            entries.reverse()
+            for item in entries:
+                post = Post(item, feed)
+                if feed.last_update and post.older_than(feed.last_update):
+                    continue
+                post.enqueue()
+                to_process += 1
+            
+            self.log.debug('Setting last update for %s' % feed.url)
+            feed.updated()
     
     def posting(self):
+        self.log.debug('Posting...') 
         try:
             post = self.queue.get(False)
         except Queue.Empty:
+            self.log.debug('Nothing to post') 
             return
         except:
             return
         
-        url = post.link
-        response = self.core.short_url(post.link)
+        url = post.url
+        response = self.core.short_url(url)
         if response.code == 0:
             url = response.items
         
-        message = "[Post] %s - %s" % (post.title, url)
-        if len(message) > 140:
-            title = post.title[:len(message) - 144] + '...'
-            message = "[Post] %s - %s" % (title, url)
-        
-        print message
-        # TODO: Tuitear
-        # TODO: Guardar en la base de datos
-        # TODO: En caso de error meter el post de nuevo en la cola
+        for afs in post.account_feeds:
+            title = post.title
+            max_length = 140 - len(afs.prefix)
+            message = "%s - %s" % (title, url)
+            
+            if len(message) > max_length:
+                title = post.title[:len(message) - max_length] + '...'
+            
+            message = "%s - %s" % (title, url)
+            
+            
+            if afs.prefix != '':
+                message = "%s %s" % (afs.prefix, message)
+            
+            print message
+            # TODO: Tuitear
+            # TODO: Guardar en la base de datos
+            # TODO: En caso de error meter el post de nuevo en la cola
     
     # =======================================================================
     # Main Loop
@@ -620,7 +599,7 @@ class DBEngine:
         self.cursor = self.connection.cursor()
         
     def execute(self, query, params=None, commit=False):
-        self.log.debug("%s, %s" % (query, params))
+        #self.log.debug("%s, %s" % (query, params))
         if params:
             self.cursor.execute(query, params)
         else:
@@ -632,8 +611,10 @@ class Feed:
     def __init__(self, db_object):
         self.id_ = db_object[0]
         self.url = db_object[1]
-        self.last_update = db_object[2]
-        self.db = None
+        if db_object[2] == '':
+            self.last_update = None
+        else:
+            self.last_update = db_object[2]
     
     @classmethod
     def get_all(self):
@@ -666,15 +647,17 @@ class Feed:
     @classmethod
     def delete(self, id_):
         self.db.execute(DELETE_FEED, (id_, ), True)
-
+    
+    def updated(self):
+        values = (time.strftime('%Y%m%d-%H%M'), self.id_, self.url)
+        self.db.execute(UPDATE_LAST_UPDATE, values, True)
+    
 class Account:
     def __init__(self, code, username, protocol, id_=None):
         self.id_ = id_
         self.code = code
         self.username = username
         self.protocol = protocol
-        self.db = None
-        self.core = None
     
     def __str__(self):
         return "%s (%s)" % (self.username, self.protocol)
@@ -732,11 +715,11 @@ class Account:
         self.db.execute(DELETE_ACCOUNT, (id_, ), True)
     
 class AccountFeed:
-    def __init__(self, id_, feed, account):
+    def __init__(self, id_, feed, account, prefix=''):
         self.id_ = id_
         self.feed = feed
         self.account = account
-        self.db = None
+        self.prefix = prefix
     
     @classmethod
     def get_all(self):
@@ -746,7 +729,7 @@ class AccountFeed:
         for obj in afs:
             feed = Feed.get_by_id(obj[1])
             account = Account.get_by_id(obj[2])
-            account_feeds.append(AccountFeed(obj[0], feed, account))
+            account_feeds.append(AccountFeed(obj[0], feed, account, obj[3]))
         return account_feeds
     
     @classmethod
@@ -756,8 +739,7 @@ class AccountFeed:
         results = []
         for item in self.db.cursor.fetchall():
             account = Account.get_by_id(item[2])
-            af = AccountFeed(item[0], feed, account)
-            results.append(af)
+            results.append(AccountFeed(item[0], feed, account, item[3]))
         return results
     
     @classmethod
@@ -786,15 +768,16 @@ class AccountFeed:
         self.db.execute(DELETE_ACCOUNT_FEED_BY_FEED, (feed_id, ), True)
         
 class Post:
-    def __init__(self, entry):
-        self.to_accounts = None
+    def __init__(self, entry, feed):
+        self.feed = feed
         self.title = entry.title
-        self.link = entry.link
+        self.url = entry.link
         self.created_at = time.strftime("%Y%m%d-%H%M", entry.published_parsed)
         self.updated_at = time.strftime("%Y%m%d-%H%M", entry.updated_parsed)
-    
+        self.account_feeds = AccountFeed.get_by_feed_id(feed.id_)
+        
     def __str__(self):
-        return "%s: %s (%s - %s)" % (self.title, self.link, self.created_at,
+        return "%s: %s (%s - %s)" % (self.title, self.url, self.created_at,
             self.updated_at)
     
     def older_than(self, value):
@@ -805,6 +788,18 @@ class Post:
     @classmethod
     def delete_by_account(self, acc_id):
         self.db.execute(DELETE_POST_BY_ACCOUNT, (acc_id, ), True)
+    
+    @classmethod
+    def is_in_database(self, url):
+        self.db.execute(SELECT_POST, (url, ))
+        return self.db.cursor.fetchone()
+    
+    def enqueue(self):
+        if not Post.is_in_database(self.url):
+            data = (self.title, self.url, self.created_at, self.updated_at, '')
+            self.db.execute(INSERT_POST, data, True)
+            if self.db.cursor.rowcount > 0:
+                self.queue.put(self)
 
 if __name__ == "__main__":
     t = TwitRss()
