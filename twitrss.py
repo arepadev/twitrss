@@ -538,7 +538,9 @@ class TwitRss:
         if response.code == 0:
             url = response.items
         
+        accounts = []
         for afs in post.account_feeds:
+            accounts.append(afs.account.code)
             title = post.title
             max_length = 140 - len(afs.prefix)
             message = "%s - %s" % (title, url)
@@ -548,14 +550,13 @@ class TwitRss:
             
             message = "%s - %s" % (title, url)
             
-            
             if afs.prefix != '':
                 message = "%s %s" % (afs.prefix, message)
             
-            print message
-            # TODO: Tuitear
-            # TODO: Guardar en la base de datos
-            # TODO: En caso de error meter el post de nuevo en la cola
+        print message
+        # self.core.broadcast_status(accounts, message)
+        # post.save()
+        # TODO: En caso de error meter el post de nuevo en la cola
     
     # =======================================================================
     # Main Loop
@@ -796,10 +797,11 @@ class Post:
     
     def enqueue(self):
         if not Post.is_in_database(self.url):
-            data = (self.title, self.url, self.created_at, self.updated_at, '')
-            self.db.execute(INSERT_POST, data, True)
-            if self.db.cursor.rowcount > 0:
-                self.queue.put(self)
+            self.queue.put(self)
+    
+    def save(self):
+        data = (self.title, self.url, self.created_at, self.updated_at, '')
+        self.db.execute(INSERT_POST, data, True)
 
 if __name__ == "__main__":
     t = TwitRss()
