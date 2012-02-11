@@ -32,6 +32,7 @@ MAX_POST_PER_FEED = 5
 SELECT_ALL_FEEDS = 'SELECT * FROM Feeds'
 SELECT_FEED_BY_ID = 'SELECT * FROM Feeds WHERE id = ?'
 SELECT_FEED_BY_URL = 'SELECT * FROM Feeds WHERE url = ?'
+COUNT_FEEDS = 'SELECT COUNT(*) FROM Feeds'
 INSERT_FEED = 'INSERT INTO Feeds (url) VALUES (?)'
 DELETE_FEED = 'DELETE FROM Feeds WHERE id = ?'
 SELECT_LAST_UPDATE = 'SELECT last_update FROM Feeds WHERE id = ? and url = ?'
@@ -43,6 +44,7 @@ INSERT_ACCOUNT = 'INSERT INTO Accounts (username,protocol,code) VALUES (?,?,?)'
 DELETE_ACCOUNT = 'DELETE FROM Accounts WHERE id = ?'
 
 SELECT_ALL_ACCOUNT_FEEDS = 'SELECT * FROM AccountFeeds'
+COUNT_ACCOUNT_FEEDS = 'SELECT COUNT(*) FROM AccountFeeds'
 SELECT_ACCOUNT_FEED = """
 SELECT AccountFeeds.id, Feeds.id, Accounts.id, AccountFeeds.prefix
 FROM AccountFeeds 
@@ -163,7 +165,7 @@ class TwitRss:
         self.log.info("Starting service")
         self.queue = Queue.Queue()
         Post.queue = self.queue
-        self.start_login()
+        self.start()
     
     def __user_input(self, message, blank=False):
         while 1:
@@ -315,7 +317,17 @@ class TwitRss:
             if index is None:
                 return False
     
-    def start_login(self):
+    def start(self):
+        accounts = Account.count()
+        feeds = Feed.count()
+        account_feeds = AccountFeed.count()
+        if (accounts == 0) or (feeds == 0) or (account_feeds == 0):
+            self.log.info('You need to fully configure your bot. Please execute script with --setup param')
+            return
+        
+        self.login()
+    
+    def login(self):
         accounts = self.core.all_accounts()
         for acc in accounts:
             self.core.register_account(acc.username, acc.protocol_id)
@@ -348,7 +360,7 @@ class TwitRss:
         if not accounts:
             print 'You need to create at least one account'
             self.add_account()
-            
+        
         while 1:
             if self.__build_confirm_menu('Do you want to add more accounts?'):
                 self.add_account()
@@ -476,7 +488,7 @@ class TwitRss:
         except Exception, e:
             self.log.exception(e)
             self.log.error('Error deassociating account form feed. Please try again')
-        
+    
     def list_feeds(self):
         self.log.debug('Listing feeds')
         feeds = self.__get_all_feeds()
@@ -553,9 +565,9 @@ class TwitRss:
             if afs.prefix != '':
                 message = "%s %s" % (afs.prefix, message)
             
-        print message
-        # self.core.broadcast_status(accounts, message)
-        # post.save()
+        #print message
+        self.core.broadcast_status(accounts, message)
+        post.save()
         # TODO: En caso de error meter el post de nuevo en la cola
     
     # =======================================================================
@@ -649,6 +661,11 @@ class Feed:
     def delete(self, id_):
         self.db.execute(DELETE_FEED, (id_, ), True)
     
+    @classmethod
+    def count(self):
+        self.db.execute(COUNT_FEEDS)
+        return self.db.cursor.fetchone()[0]
+        
     def updated(self):
         values = (time.strftime('%Y%m%d-%H%M'), self.id_, self.url)
         self.db.execute(UPDATE_LAST_UPDATE, values, True)
@@ -767,7 +784,12 @@ class AccountFeed:
     @classmethod
     def delete_by_feed(self, feed_id):
         self.db.execute(DELETE_ACCOUNT_FEED_BY_FEED, (feed_id, ), True)
-        
+    
+    @classmethod
+    def count(self):
+        self.db.execute(COUNT_ACCOUNT_FEEDS)
+        return self.db.cursor.fetchone()[0]
+    
 class Post:
     def __init__(self, entry, feed):
         self.feed = feed
