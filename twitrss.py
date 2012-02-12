@@ -525,8 +525,7 @@ class TwitRss:
         for feed in feeds:
             # Preparing the process vars
             d = feedparser.parse(feed.url)
-            self.log.debug('Processing RSS for "%s" (%s)' % (d.feed.title, 
-                feed.url))
+            self.log.debug('Processing RSS for %s' % (feed.url))
             
             entries = d.entries
             if feed.last_update is None:
