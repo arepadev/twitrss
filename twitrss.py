@@ -24,9 +24,10 @@ from optparse import OptionParser
 from libturpial.api.core import Core
 from libturpial.common import ProtocolType
 
+LOOP_TIME = 60
 POSTING_TIME = 1 # min
 POLLING_TIME = 5 # min
-MAX_POST_PER_FEED = 5
+MAX_POST_PER_FEED = 10
 
 # Queries
 SELECT_ALL_FEEDS = 'SELECT * FROM Feeds'
@@ -114,6 +115,9 @@ class TwitRss:
         parser.add_option('--show-info', dest='show_info', action='store_true',
             help='show information about feeds and accounts', default=False)
         
+        parser.add_option('--test', dest='test', action='store_true',
+            help='poll feeds without posting or saving in db', default=False)
+        
         (options, args) = parser.parse_args()
         
         if options.debug:
@@ -162,6 +166,9 @@ class TwitRss:
             self.show_info()
             self.quit()
         
+        if options.test:
+            self.test = True
+            
         self.log.info("Starting service")
         self.queue = Queue.Queue()
         Post.queue = self.queue
@@ -564,11 +571,13 @@ class TwitRss:
             
             if afs.prefix != '':
                 message = "%s %s" % (afs.prefix, message)
-            
-        #print message
-        self.core.broadcast_status(accounts, message)
-        post.save()
-        # TODO: En caso de error meter el post de nuevo en la cola
+        
+        if self.test:
+            print message
+        else:
+            self.core.broadcast_status(accounts, message)
+            post.save()
+            # TODO: En caso de error meter el post de nuevo en la cola
     
     # =======================================================================
     # Main Loop
@@ -577,6 +586,8 @@ class TwitRss:
     def main(self):
         count_posting = 1
         count_polling = 1
+        self.polling()
+        
         while True:
             try:
                 if count_polling > POLLING_TIME:
@@ -587,7 +598,7 @@ class TwitRss:
                     self.posting()
                     count_posting = 0
                 
-                time.sleep(5)
+                time.sleep(LOOP_TIME)
                 count_posting += 1
                 count_polling += 1
             except KeyboardInterrupt:
@@ -795,8 +806,29 @@ class Post:
         self.feed = feed
         self.title = entry.title
         self.url = entry.link
-        self.created_at = time.strftime("%Y%m%d-%H%M", entry.published_parsed)
-        self.updated_at = time.strftime("%Y%m%d-%H%M", entry.updated_parsed)
+        created_date = None
+        try:
+            created_date = entry.created_parsed
+        except:
+            try:
+                created_date = entry.updated_parsed
+            except:
+                try:
+                    created_date = entry.published_parsed
+                except:
+                    pass
+        
+        updated_date = None
+        try:
+            updated_date = entry.updated_parsed
+        except:
+            try:
+                updated_date = created_date
+            except:
+                pass
+        
+        self.created_at = time.strftime("%Y%m%d-%H%M", created_date)
+        self.updated_at = time.strftime("%Y%m%d-%H%M", updated_date)
         self.account_feeds = AccountFeed.get_by_feed_id(feed.id_)
         
     def __str__(self):
