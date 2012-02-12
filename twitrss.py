@@ -1,4 +1,4 @@
-#!/usr/bin/python2
+#!/usr/bin/python
 # -*- coding: utf-8 -*-
 
 """ Twitter bot based on libturpial that reads RSS feeds and post them on 
@@ -38,6 +38,7 @@ INSERT_FEED = 'INSERT INTO Feeds (url) VALUES (?)'
 DELETE_FEED = 'DELETE FROM Feeds WHERE id = ?'
 SELECT_LAST_UPDATE = 'SELECT last_update FROM Feeds WHERE id = ? and url = ?'
 UPDATE_LAST_UPDATE = 'UPDATE Feeds SET last_update = ? WHERE id = ? AND url = ?'
+DELETE_LAST_UPDATE = 'UPDATE Feeds SET last_update = NULL'
 
 SELECT_ACCOUNT_BY_CODE = 'SELECT * FROM Accounts WHERE code = ?'
 SELECT_ACCOUNT_BY_ID = 'SELECT * FROM Accounts WHERE id = ?'
@@ -119,9 +120,9 @@ class TwitRss:
         parser.add_option('--test', dest='test', action='store_true',
             help='poll feeds without posting or saving in db', default=False)
         
-        parser.add_option('--del-posts', dest='delete_posts', 
-            action='store_true', help='delete all post from database', 
-            default=False)
+        parser.add_option('--empty-records', dest='empty_records', 
+            action='store_true', default=False,
+            help='delete posts and update records from database')
             
         (options, args) = parser.parse_args()
         
@@ -171,8 +172,8 @@ class TwitRss:
             self.show_info()
             self.quit()
         
-        if options.delete_posts:
-            self.delete_posts()
+        if options.empty_records:
+            self.empty_records()
             self.quit()
         
         self.test = options.test
@@ -522,8 +523,11 @@ class TwitRss:
         self.__show_accounts(just_list=True)
         self.__show_account_feeds(just_list=True)
     
-    def delete_posts(self):
+    def empty_records(self):
+        self.log.info('Deleting posts records')
         Post.delete_all()
+        self.log.info('Deleting update records')
+        Feed.clear_updates()
     
     # =======================================================================
     # Services
@@ -688,6 +692,10 @@ class Feed:
     def count(self):
         self.db.execute(COUNT_FEEDS)
         return self.db.cursor.fetchone()[0]
+    
+    @classmethod
+    def clear_updates(self):
+        self.db.execute(DELETE_LAST_UPDATE, (), True)
         
     def updated(self):
         values = (time.strftime('%Y%m%d-%H%M'), self.id_, self.url)
