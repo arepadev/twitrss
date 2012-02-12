@@ -548,7 +548,8 @@ class TwitRss:
             entries.reverse()
             for item in entries:
                 if self.test:
-                    print item.keys()
+                    #print item.keys()
+                    pass
                 post = Post(item, feed)
                 if feed.last_update and post.older_than(feed.last_update):
                     continue
@@ -589,7 +590,7 @@ class TwitRss:
                 message = "%s %s" % (afs.prefix, message)
         
         if self.test:
-            print message
+            print message.encode('utf-8')
         else:
             self.core.broadcast_status(accounts, message)
             post.save()
