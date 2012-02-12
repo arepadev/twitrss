@@ -346,7 +346,6 @@ class TwitRss:
     def login(self):
         accounts = self.core.all_accounts()
         for acc in accounts:
-            self.core.register_account(acc.username, acc.protocol_id)
             response = self.core.login(acc.id_)
             if response.code > 0:
                 print "Login error:", response.errmsg
@@ -362,6 +361,7 @@ class TwitRss:
             rtn = self.core.auth(acc.id_)
             if rtn.code > 0:
                 print rtn.errmsg
+                return
             else:
                 self.log.debug('Logged in with account %s' % acc.id_)
         
