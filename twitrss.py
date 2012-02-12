@@ -533,6 +533,8 @@ class TwitRss:
                 entries = d.entries[:MAX_POST_PER_FEED]
             entries.reverse()
             for item in entries:
+                if self.test:
+                    print item.keys()
                 post = Post(item, feed)
                 if feed.last_update and post.older_than(feed.last_update):
                     continue
