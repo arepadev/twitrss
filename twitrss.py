@@ -73,6 +73,7 @@ INSERT_POST = """
 INSERT INTO Posts (title,link,created,updated,account_id) VALUES (?,?,?,?,?)
 """
 DELETE_POST_BY_ACCOUNT = 'DELETE FROM Posts WHERE account_id = ?'
+DELETE_ALL_POSTS = 'DELETE FROM Posts'
 
 # TODO: Test menues with no accounts, no feeds and no associations
 # TODO: Initialize with current date for posting none at first run
@@ -118,6 +119,10 @@ class TwitRss:
         parser.add_option('--test', dest='test', action='store_true',
             help='poll feeds without posting or saving in db', default=False)
         
+        parser.add_option('--del-posts', dest='delete_posts', 
+            action='store_true', help='delete all post from database', 
+            default=False)
+            
         (options, args) = parser.parse_args()
         
         if options.debug:
@@ -164,6 +169,10 @@ class TwitRss:
         
         if options.show_info:
             self.show_info()
+            self.quit()
+        
+        if options.delete_posts:
+            self.delete_posts()
             self.quit()
         
         self.test = options.test
@@ -513,6 +522,9 @@ class TwitRss:
         self.__show_accounts(just_list=True)
         self.__show_account_feeds(just_list=True)
     
+    def delete_posts(self):
+        Post.delete_all()
+    
     # =======================================================================
     # Services
     # =======================================================================
@@ -843,6 +855,10 @@ class Post:
     @classmethod
     def delete_by_account(self, acc_id):
         self.db.execute(DELETE_POST_BY_ACCOUNT, (acc_id, ), True)
+    
+    @classmethod
+    def delete_all(self):
+        self.db.execute(DELETE_ALL_POSTS, (), True)
     
     @classmethod
     def is_in_database(self, url):
