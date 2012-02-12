@@ -166,7 +166,7 @@ class TwitRss:
             self.show_info()
             self.quit()
         
-        self.test = options.test:
+        self.test = options.test
         
         self.log.info("Starting service")
         self.queue = Queue.Queue()
